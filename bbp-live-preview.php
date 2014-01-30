@@ -1,9 +1,8 @@
 <?php
 /*
-Plugin Name: bbP Live Preview
-Description: Preview your bbPress forum posts before posting.
-Author: r-a-y
-Author URI: http://profiles.wordpress.org/r-a-y
+Plugin Name: bbP Live Preview (bbPress 1.x)
+Description: Preview your BuddyPress forum posts (bbPress 1.x only) before posting.
+Author: r-a-y, boonebgorges
 Version: 0.1
 License: GPLv2 or later
 */
@@ -25,13 +24,17 @@ class bbP_Live_Preview {
 	 * Constructor.
 	 */
 	function __construct() {
+		// Bail if we're not running bbPress 1.x
+		if ( ! bp_is_active( 'forums' ) ) {
+			return;
+		}
+
 		// page injection
-		add_action( 'bbp_theme_before_topic_form_submit_wrapper', array( $this, 'preview' ) );
-		add_action( 'bbp_theme_before_reply_form_submit_wrapper', array( $this, 'preview' ) );
+		add_action( 'groups_forum_new_reply_after', array( $this, 'preview' ) );
+		add_action( 'bp_after_group_forum_post_new', array( $this, 'preview' ) );
 
 		// ajax handlers
 		add_action( 'wp_ajax_bbp_live_preview'       , array( $this, 'ajax_callback' ) );
-		add_action( 'wp_ajax_nopriv_bbp_live_preview', array( $this, 'ajax_callback' ) );
 
 		// autoembed hacks - uses BuddyPress
 		add_action( 'bp_core_setup_oembed',            array( $this, 'autoembed_hacks' ) );
@@ -49,12 +52,13 @@ class bbP_Live_Preview {
 	public function preview() {
 	?>
 
-		<label for="bbp-post-preview" style="clear:both; display:block;"><?php _e( 'Preview:', 'bbp-live-preview' ); ?></label>
-		<div id="bbp-post-preview" style="border:1px solid #ababab; margin-top:.5em; padding:5px; color:#333;"></div>
+		<label id="bbp-post-preview-label" for="bbp-post-preview" style="clear:both; display:none;"><?php _e( 'Preview:', 'bbp-live-preview' ); ?></label>
+		<div id="bbp-post-preview" style="display: none; width:95%; border:1px solid #ababab; margin-top:.5em; padding:5px; color:#333;"></div>
 
 
 		<script type="text/javascript">
 			var bbp_preview_timer   = null;
+			var bbp_preview_visible = false;
 			var bbp_preview_ajaxurl = '<?php echo plugin_dir_url( __FILE__ ) . 'ajax.php'; ?>';
 
 			function bbp_preview_post( text, type ) {
@@ -70,6 +74,12 @@ class bbP_Live_Preview {
 					);
 
 					post.success( function (data) {
+						if ( ! bbp_preview_visible ) {
+							document.getElementById('bbp-post-preview-label').style.display = 'block';
+							document.getElementById('bbp-post-preview').style.display = 'block';
+							bbp_preview_visible = true;
+						}
+
 						jQuery("#bbp-post-preview").html(data);
 					});
 				}, 1500);
@@ -87,7 +97,7 @@ class bbP_Live_Preview {
 
 			// regular textarea capture
 			jQuery(document).ready( function($) {
-				$("#bbp_topic_content, #bbp_reply_content").keyup(function(){
+				$("#reply_text, #topic_text").keyup(function(){
 					var textarea = $(this);
 					var id = $(this).attr('id').split('_');
 
@@ -116,25 +126,19 @@ class bbP_Live_Preview {
 			die();
 
 		// if autoembeds are allowed and BP exists, allow autoembeds in preview
+		global $wp_embed;
+
+		// remove default bbP autoembed filters /////////////////////////////////
 		//
-		// this only works if BP is installed b/c WP's autoembed is too restrictive
-		// (relies on an actual WP post).  BP's autoembed doesn't require an actual WP
-		// post to be recorded to run autoembeds
-		if ( bbp_use_autoembed() && ! empty( $GLOBALS['bp'] ) ) {
-			global $wp_embed;
+		// newer version of bbP
+		remove_filter( 'bbp_get_'. $type . '_content', array( $wp_embed, 'autoembed' ), 2 );
 
-			// remove default bbP autoembed filters /////////////////////////////////
-			//
-			// newer version of bbP
-			remove_filter( 'bbp_get_'. $type . '_content', array( $wp_embed, 'autoembed' ), 2 );
+		// older version of bbP
+		remove_filter( 'bbp_get_'. $type . '_content', array( $wp_embed, 'autoembed' ), 8 );
 
-			// older version of bbP
-			remove_filter( 'bbp_get_'. $type . '_content', array( $wp_embed, 'autoembed' ), 8 );
-
-			// hack: provide a dummy post ID so embeds will run
-			// this is important!
-			add_filter( 'embed_post_id', create_function( '', 'return 1;' ) );
-		}
+		// hack: provide a dummy post ID so embeds will run
+		// this is important!
+		add_filter( 'embed_post_id', create_function( '', 'return 1;' ) );
 
 		// Remove wp_filter_kses filters from content for capable users
 		if ( current_user_can( 'unfiltered_html' ) ) {
@@ -142,8 +146,7 @@ class bbP_Live_Preview {
 		}
 
 		// run bbP filters
-		$content = apply_filters( 'bbp_new_' . $type . '_pre_content', stripslashes( $_POST['text'] ) );
-		$content = apply_filters( 'bbp_get_' . $type . '_content',     stripslashes( $content ) );
+		$content = apply_filters( 'bp_get_the_topic_post_content', stripslashes( $_POST['text'] ) );
 
 		echo $content;
 		die;
@@ -162,16 +165,8 @@ class bbP_Live_Preview {
 		if ( ! defined( 'DOING_AJAX' ) )
 			return;
 
-		// make sure bbP allows autoembeds
-		if ( bbp_use_autoembed() ) {
-			// replies
-			add_filter( 'bbp_get_reply_content', array( $embed, 'autoembed' ), 2 );
-			add_filter( 'bbp_get_reply_content', array( $embed, 'run_shortcode' ), 1 );
-
-			// topics
-			add_filter( 'bbp_get_topic_content', array( $embed, 'autoembed' ), 2 );
-			add_filter( 'bbp_get_topic_content', array( $embed, 'run_shortcode' ), 1 );
-		}
+		add_filter( 'bp_get_the_topic_post_content', array( $embed, 'autoembed' ), 2 );
+		add_filter( 'bp_get_the_topic_post_content', array( $embed, 'run_shortcode' ), 1 );
 	}
 
 	/**
@@ -193,6 +188,6 @@ class bbP_Live_Preview {
 
 }
 
-add_action( 'bbp_includes', array( 'bbP_Live_Preview', 'init' ) );
+add_action( 'bp_include', array( 'bbP_Live_Preview', 'init' ) );
 
 endif;
